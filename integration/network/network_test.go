@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -146,4 +147,42 @@ func TestHostIPv4BridgeLabel(t *testing.T) {
 	assert.Assert(t, len(out.IPAM.Config) > 0)
 	// Make sure the SNAT rule exists
 	icmd.RunCommand("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", out.IPAM.Config[0].Subnet, "!", "-o", bridgeName, "-j", "SNAT", "--to-source", ipv4SNATAddr).Assert(t, icmd.Success)
+}
+
+func TestMultipleNetworksWithSameName(t *testing.T) {
+	skip.If(t, testEnv.OSType == "windows")
+	skip.If(t, testEnv.IsRemoteDaemon)
+	skip.If(t, testEnv.IsRootless, "rootless mode has different view of network")
+	d := daemon.New(t)
+	d.Start(t)
+	defer d.Stop(t)
+	c := d.NewClientT(t)
+	defer c.Close()
+	ctx := context.Background()
+
+	networkName := "networkName"
+	network.CreateNoError(ctx, t, c, networkName)
+	network.CreateNoError(ctx, t, c, networkName)
+
+	// Since CreateNoError returns the name, not the ID, we have to query the IDs
+	// TODO: Pass a filter "name = networkName" to the query
+	res, body, err := request.Get("/networks", request.JSON)
+	assert.NilError(t, err)
+	assert.Equal(t, res.StatusCode, http.StatusOK)
+	buf, err := request.ReadBody(body)
+	assert.NilError(t, err)
+	var allNetworks []types.NetworkResource
+	err = json.Unmarshal(buf, &allNetworks)
+	assert.NilError(t, err)
+
+	ourNetworks := make([]types.NetworkResource, 0)
+	for _, n := range allNetworks {
+		// FIXME: n.Name seems to return the type (bridge, none, ...) and not the name
+		fmt.Println("Network ", n.Name)
+		if n.Name == networkName {
+			ourNetworks = append(ourNetworks, n)
+		}
+	}
+
+	assert.Equal(t, len(ourNetworks), 2, "There are 2 networks with the name networkName")
 }
